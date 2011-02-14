@@ -1056,6 +1056,7 @@ sub do_search_replace {
         }
         while ( my $obj = $iter->() ) {
             next unless $author->is_superuser || $api->{perm_check}->($obj);
+            my $orig_obj = $obj->clone;
             my $match = 0;
             unless ($show_all) {
                 for my $col (@cols) {
@@ -1075,7 +1076,9 @@ sub do_search_replace {
                 }
             }
             if ( $match || $show_all ) {
-                push @to_save, $obj if $do_replace && !$show_all;
+                push @to_save, [ $obj, $orig_obj ]
+                    if $do_replace
+                        && !$show_all;
                 push @data, $obj;
             }
             last if ( $limit ne 'all' ) && @data > $limit;
@@ -1095,11 +1098,16 @@ sub do_search_replace {
         }
     }
     my $replace_count = 0;
-    for my $obj (@to_save) {
+    for my $objs (@to_save) {
+        my ( $obj, $orig_obj ) = @$objs;
         $replace_count++;
+
+        $app->run_callbacks( 'cms_pre_save.' . $type, $app, $obj, $orig_obj );
         $obj->save
             or return $app->error(
             $app->translate( "Saving object failed: [_2]", $obj->errstr ) );
+        $app->run_callbacks( 'cms_post_save.' . $type, $app, $obj,
+            $orig_obj );
     }
     if (@data) {
 
