@@ -226,16 +226,50 @@ sub content_is_updated {
     }
 }
 
-sub delete {
+sub delete_with_rename_and_truncate {
     my $fmgr = shift;
     my ($file) = @_;
-    $file = _local($file);
+
+    require File::Temp;
+    my ( $fh, $deleted )
+        = File::Temp::tempfile( DIR => MT->config('TempDir') );
+    close($fh);
+
+    $fmgr->rename( $file, $deleted )
+        or return;
+
+    truncate( $deleted, 0 )
+        or return $fmgr->error(
+        MT->translate( "Deleting '[_1]' failed: [_2]", $file, _syserr("$!") )
+        );
+
+    1;
+}
+
+sub delete_with_unlink {
+    my $fmgr = shift;
+    my ($file) = @_;
+
     return 1 unless -e $file or -l $file;
     unlink $file
         or return $fmgr->error(
         MT->translate( "Deleting '[_1]' failed: [_2]", $file, _syserr("$!") )
         );
+
     1;
+}
+
+sub delete {
+    my $fmgr = shift;
+    my ($file) = @_;
+    $file = _local($file);
+
+    if ( $^O eq 'MSWin32' && $file =~ m#Windows.Temp# ) {
+        $fmgr->delete_with_rename_and_truncate($file);
+    }
+    else {
+        $fmgr->delete_with_unlink($file);
+    }
 }
 
 1;
