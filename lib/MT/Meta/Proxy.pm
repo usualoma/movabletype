@@ -397,6 +397,55 @@ sub bulk_load_meta_objects {
         }
         $proxy->{__loaded_all_objects} = 1;
     }
+
+    if ( MT::Memcached->is_available ) {
+        foreach my $obj (@$objs) {
+            $obj->driver->uncache_object($obj);
+            $obj->driver->cache_object($obj);
+        }
+    }
+}
+
+sub prepare_objects {
+    my $proxy = shift;
+
+    my $pkg      = $proxy->{pkg};
+    my $meta_pkg = $proxy->meta_pkg;
+
+    foreach my $meta_obj ( values %{ $proxy->{__objects} } ) {
+        my $type_id = $meta_obj->type;
+
+        my $field = $proxy->META_CLASS()->metadata_by_id( $pkg, $type_id )
+            or next;
+
+        my $name = $field->{name};
+        my $type = $field->{type};
+
+        my $meta_col_def = $meta_obj->column_def($type);
+        if ($meta_col_def) {
+            if ( $meta_col_def->{type} eq 'blob' ) {
+                unserialize_blob($meta_obj);
+            }
+            elsif ( $meta_col_def->{type} eq 'datetime' ) {
+                $meta_obj->$type( _db2ts( $meta_obj->$type ) );
+            }
+
+            my $enc = MT->config->PublishCharset || 'UTF-8';
+            my $data = $meta_obj->$type;
+            unless ( ref $data ) {
+                $data = Encode::decode( $enc, $data )
+                    unless Encode::is_utf8($data);
+            }
+            $meta_obj->$type( $data, { no_changed_flag => 1 } );
+        }
+        $proxy->{__objects}->{$name} = $meta_obj;
+        $proxy->{__loaded} ||= {};
+        if ( !$proxy->{__loaded}->{$name} ) {
+            $proxy->{__loaded}->{$name} = 1;
+            $proxy->{__pkeys}->{type}
+                = { not => [ keys %{ $proxy->{__loaded} } ] };
+        }
+    }
 }
 
 sub load_objects {
@@ -562,6 +611,38 @@ sub refresh {
     # just delete and let the Proxy lazy load it afterwards
     delete $proxy->{__objects};
     return 1;
+}
+
+sub deflate {
+    my $self = shift;
+    {   __objects => {
+            map { $_ => $self->{__objects}{$_}->deflate }
+                keys %{ $self->{__objects} }
+        },
+        status => {
+            __loaded_all_objects => $self->{__loaded_all_objects} ? 1 : 0,
+        },
+    };
+}
+
+sub inflate {
+    my $self       = shift;
+    my ($data)     = @_;
+    my $meta_class = $self->meta_pkg;
+
+    if ( my $objects = $data->{__objects} ) {
+        $self->{__objects} ||= {};
+        foreach my $key ( keys %$objects ) {
+            $self->{__objects}{$key}
+                = $meta_class->inflate( $objects->{$key} );
+        }
+    }
+    if ( my $meta_status = $data->{status} ) {
+        foreach my $key ( keys %$meta_status ) {
+            $self->{$key} = $meta_status->{$key};
+        }
+    }
+    $self->prepare_objects;
 }
 
 1;
